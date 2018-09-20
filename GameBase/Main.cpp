@@ -2,6 +2,15 @@
 
 int main()
 {
+	D3D_FEATURE_LEVEL levels[] = {
+		D3D_FEATURE_LEVEL_9_1,
+		D3D_FEATURE_LEVEL_9_2,
+		D3D_FEATURE_LEVEL_9_3,
+		D3D_FEATURE_LEVEL_10_1,
+		D3D_FEATURE_LEVEL_10_2,
+		D3D_FEATURE_LEVEL_11_1,
+		D3D_FEATURE_LEVEL_11_2
+	};
 	m_rc;
 	int x = CW_USEDEFAULT;
 	int y = CW_USEDEFAULT;
@@ -11,7 +20,10 @@ int main()
 	int nDefaultWidth = 640;
 	int nDefaultHeight = 480;
 
-
+	bool bGotMsg;
+	MSG msg;
+	msg.message = WM_NULL;
+	PeekMessage(&msg, NULL, 0U, 0U, PM_NOREMOVE);
 
 	if (m_hInstance == NULL)
 		m_hInstance = (HINSTANCE)GetModuleHandle(NULL);
@@ -22,7 +34,7 @@ int main()
 
 	if (hIcon == NULL)
 		hIcon = ExtractIcon(m_hInstance, szExePath, 0);
-
+	//populate wndclass
 	WNDCLASS wndClass;
 	wndClass.style = CS_DBLCLKS;
 	wndClass.lpfnWndProc = MainClass::StaticWindowProc;
@@ -34,17 +46,17 @@ int main()
 	wndClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
 	wndClass.lpszMenuName = NULL;
 	wndClass.lpszClassName = m_windowClassName.c_str();
-
+	//register wndclass with system
 	if (!RegisterClass(&wndClass))
 	{
 		DWORD dwError = GetLastError();
 		if (dwError != ERROR_CLASS_ALREADY_EXISTS)
 			return HRESULT_FROM_WIN32(dwError);
 	}
-
+	//unsure,  I think these are settings
 	SetRect(&m_rc, 0, 0, nDefaultWidth, nDefaultHeight);
 	AdjustWindowRect(&m_rc, WS_OVERLAPPEDWINDOW, (m_hMenu != NULL) ? true : false);
-
+	//Create the Window
 	m_hWnd = CreateWindow(
 		m_windowClassName.c_str(),
 		L"Cube11",
@@ -62,7 +74,7 @@ int main()
 		DWORD dwError = GetLastError();
 		return HRESULT_FROM_WIN32(dwError);
 	}
-	
+	//WindowProc Function
 	LRESULT CALLBACK MainClass::StaticWindowProc(
 		HWND hWnd,
 		UINT uMsg,
@@ -92,6 +104,27 @@ int main()
 			break;
 		}
 		return DefWindowProc(hWnd, uMsg, wParam, lParam);
+	}
+	//Main loop
+
+	while(WM_QUIT != msg.message)
+	{
+		bGotMsg = (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE) != 0);
+
+		if (bGotMsg)
+		{
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+
+		}
+		else
+		{
+			renderer->Update();
+
+			renderer->Render();
+
+			deviceResources->Present();
+		}
 	}
 
 
