@@ -25,6 +25,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	RegisterClassEx(&wc);
 
+	RECT wr = { 0,0,500,400 };
+	AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+
 	hWnd = CreateWindowEx(
 		NULL,
 		"WindowClass1",
@@ -32,8 +35,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		WS_OVERLAPPEDWINDOW,
 		300,
 		300,
-		500,
-		400,
+		wr.right - wr.left,
+		wr.bottom - wr.top,
 		NULL,
 		NULL,
 		hInstance,
@@ -44,11 +47,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	MSG msg;
 
-	while (GetMessage(&msg, NULL, 0, 0))
+	while (TRUE)
 	{
-		TranslateMessage(&msg);
+		if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+		{
 
-		DispatchMessage(&msg);
+			TranslateMessage(&msg);
+
+			DispatchMessage(&msg);
+
+			if (msg.message == WM_QUIT)
+				break;
+		}
+		else
+		{
+			//Game code
+
+		}
 	}
 
 	return msg.wParam;
