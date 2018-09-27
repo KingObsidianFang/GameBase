@@ -1,5 +1,13 @@
 #include <Windows.h>
 #include <windowsx.h>
+#include <d3d11.h>
+
+IDXGISwapChain *swapchain;             // the pointer to the swap chain interface
+ID3D11Device *dev;                     // the pointer to our Direct3D device interface
+ID3D11DeviceContext *devcon;           // the pointer to our Direct3D device context
+
+void InitD3D(HWND hWnd);     // sets up and initializes Direct3D
+void CleanD3D(void); 
 
 LRESULT CALLBACK WindowProc(
 	HWND hWnd,
@@ -79,8 +87,54 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
 		PostQuitMessage(0);
 		return 0;
 	}
+	case WM_CHAR:
+	{
+	case 0x53:
+	{
+		PostQuitMessage(0);
+		return 0;
+	}
+	}
 	break;
 	}
 	return DefWindowProc(hWnd, message, wParam, lParam);
 
+}
+
+void InitD3D(HWND hWnd)
+{
+	DXGI_SWAP_CHAIN_DESC scd;
+
+	ZeroMemory(&scd, sizeof(DXGI_SWAP_CHAIN_DESC));
+
+	scd.BufferCount = 1;                                    // one back buffer
+	scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;     // use 32-bit color
+	scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;      // how swap chain is to be used
+	scd.OutputWindow = hWnd;                                // the window to be used
+	scd.SampleDesc.Count = 4;                               // how many multisamples
+	scd.Windowed = TRUE;
+
+	D3D11CreateDeviceAndSwapChain(
+		NULL,
+		D3D_DRIVER_TYPE_HARDWARE,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		D3D11_SDK_VERSION,
+		&scd,
+		&swapchain,
+		&dev,
+		NULL,
+		&devcon
+	);
+
+}
+
+void CleanD3D()
+{
+	// close and release all existing COM objects
+	swapchain->Release();
+	dev->Release();
+	devcon->Release();
 }
