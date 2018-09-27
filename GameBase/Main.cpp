@@ -1,13 +1,5 @@
 #include <Windows.h>
 #include <windowsx.h>
-#include <d3d11.h>
-
-IDXGISwapChain *swapchain;             // the pointer to the swap chain interface
-ID3D11Device *dev;                     // the pointer to our Direct3D device interface
-ID3D11DeviceContext *devcon;           // the pointer to our Direct3D device context
-
-void InitD3D(HWND hWnd);     // sets up and initializes Direct3D
-void CleanD3D(void); 
 
 #include <d3d11.h>
 #include <d3dx11.h>
