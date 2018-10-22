@@ -1,17 +1,54 @@
+#define WIN32_LEAN_AND_MEAN
+
 #include <Windows.h>
-#include <windowsx.h>
+#include <shellapi.h> //For CommandLineToArgvW
 
-#include <d3d11.h>
-#include <d3dx11.h>
-#include <d3dx10.h>
+// The min/max macros conflict with like-named member functions.
+// Only use std::min and std::max defined in <algorithm>.
+#if defined(min)
+#undef min
+#endif
 
-#pragma comment (lib, "d3d11.lib") 
-#pragma comment (lib, "d3dx11.lib") 
-#pragma comment (lib, "d3dx10.lib")
+#if defined(max)
+#undef max
+#endif
 
 #define SCREEN_WIDTH 1920
 #define SCREEN_HEIGHT 1080
 
+// Windows Runtime Library. Needed for Microsoft::WRL::ComPtr<> template class.
+#include <wrl.h>
+using namespace Microsoft::WRL;
+
+// DirectX 12 specific headers.
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <d3dcompiler.h>
+#include <DirectXMath.h>
+
+// D3D12 extension library.
+#include <d3dx12.h>
+
+// STL Headers
+#include <algorithm>
+#include <cassert>
+#include <chrono>
+
+//Our includes
+#include "Helpers.h"
+
+// The number of swap chain back buffers.
+const uint8_t g_NumFrames = 3;
+// Use WARP adapter
+bool g_UseWarp = false;
+
+uint32_t g_ClientWidth = 1280;
+uint32_t g_ClientHeight = 720;
+
+// Set to true once the DX12 objects have been initialized.
+bool g_IsInitialized = false;
+
+//Window Procedure function
 LRESULT CALLBACK WindowProc(
 	HWND hWnd,
 	UINT message,
@@ -19,15 +56,33 @@ LRESULT CALLBACK WindowProc(
 	LPARAM lParam);
 
 // global declarations
-IDXGISwapChain *swapchain;             // the pointer to the swap chain interface
-ID3D11Device *dev;                     // the pointer to our Direct3D device interface
-ID3D11DeviceContext *devcon; 
-ID3D11RenderTargetView *backbuffer;
-ID3D11VertexShader *pVS;
-ID3D11PixelShader *pPS;
-struct VERTEX { FLOAT X, Y, Z; D3DXCOLOR Color; };    // a struct to define a vertex
-ID3D11Buffer *pVBuffer;
-ID3D11InputLayout *pLayout;
+HWND hWnd;
+WNDCLASSEX wc;
+RECT wr = { 0,0,500,400 };
+// DirectX 12 Objects
+ComPtr<ID3D12Device2> g_Device;
+ComPtr<ID3D12CommandQueue> g_CommandQueue;
+ComPtr<IDXGISwapChain4> g_SwapChain;
+ComPtr<ID3D12Resource> g_BackBuffers[g_NumFrames];
+ComPtr<ID3D12GraphicsCommandList> g_CommandList;
+ComPtr<ID3D12CommandAllocator> g_CommandAllocators[g_NumFrames];
+ComPtr<ID3D12DescriptorHeap> g_RTVDescriptorHeap;
+
+UINT g_RTVDescriptorSize;
+UINT g_CurrentBackBufferIndex;
+// Synchronization objects
+ComPtr<ID3D12Fence> g_Fence;
+uint64_t g_FenceValue = 0;
+uint64_t g_FrameFenceValues[g_NumFrames] = {};
+HANDLE g_FenceEvent;
+// By default, enable V-Sync.
+// Can be toggled with the V key.
+bool g_VSync = true;
+bool g_TearingSupported = false;
+// By default, use windowed mode.
+// Can be toggled with the Alt+Enter or F11
+bool g_Fullscreen = false;
+
 
 // function prototypes
 void InitD3D(HWND hWnd);     // sets up and initializes Direct3D
@@ -35,11 +90,13 @@ void CleanD3D(void);         // closes Direct3D and releases memory
 void RenderFrame(void);
 void InitGraphics(void);
 void InitPipeline(void);
+void ParseCommandLineArguments();
+void EnableDebugLayer();
+
+
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-	HWND hWnd;
-	WNDCLASSEX wc;
 
 	ZeroMemory(&wc, sizeof(WNDCLASSEX));
 
@@ -53,7 +110,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	RegisterClassEx(&wc);
 
-	RECT wr = { 0,0,500,400 };
 	AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
 
 	hWnd = CreateWindowEx(
@@ -119,145 +175,161 @@ LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPara
 	return DefWindowProc(hWnd, message, wParam, lParam);
 
 }
+void ParseCommandLineArguments()
+{
+	int argc;
+	wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
+
+	for (size_t i = 0; i < argc; ++i)
+	{
+		if (::wcscmp(argv[i], L"-w") == 0 || ::wcscmp(argv[i], L"--width") == 0)
+		{
+			g_ClientWidth = ::wcstol(argv[++i], nullptr, 10);
+		}
+		if (::wcscmp(argv[i], L"-h") == 0 || ::wcscmp(argv[i], L"--height") == 0)
+		{
+			g_ClientHeight = ::wcstol(argv[++i], nullptr, 10);
+		}
+		if (::wcscmp(argv[i], L"-warp") == 0 || ::wcscmp(argv[i], L"--warp") == 0)
+		{
+			g_UseWarp = true;
+		}
+	}
+
+	// Free memory allocated by CommandLineToArgvW
+	::LocalFree(argv);
+}
+void EnableDebugLayer()
+{
+#if defined(_DEBUG)
+	// Always enable the debug layer before doing anything DX12 related
+	// so all possible errors generated while creating DX12 objects
+	// are caught by the debug layer.
+	ComPtr<ID3D12Debug> debugInterface;
+	ThrowIfFailed(D3D12GetDebugInterface(IID_PPV_ARGS(&debugInterface)));
+	debugInterface->EnableDebugLayer();
+#endif
+}
+
+ComPtr<IDXGIAdapter4> GetAdapter(bool useWarp)
+{
+	ComPtr<IDXGIFactory4> dxgiFactory;
+	UINT createFactoryFlags = 0;
+#if defined(_DEBUG)
+	createFactoryFlags = DXGI_CREATE_FACTORY_DEBUG;
+#endif
+
+	ThrowIfFailed(CreateDXGIFactory2(createFactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
+	ComPtr<IDXGIAdapter1> dxgiAdapter1;
+	ComPtr<IDXGIAdapter4> dxgiAdapter4;
+
+	if (useWarp)
+	{
+		ThrowIfFailed(dxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&dxgiAdapter1)));
+		ThrowIfFailed(dxgiAdapter1.As(&dxgiAdapter4));
+	}
+	else
+	{
+		SIZE_T maxDedicatedVideoMemory = 0;
+		for (UINT i = 0; dxgiFactory->EnumAdapters1(i, &dxgiAdapter1) != DXGI_ERROR_NOT_FOUND; ++i)
+		{
+			DXGI_ADAPTER_DESC1 dxgiAdapterDesc1;
+			dxgiAdapter1->GetDesc1(&dxgiAdapterDesc1);
+
+			// Check to see if the adapter can create a D3D12 device without actually 
+			// creating it. The adapter with the largest dedicated video memory
+			// is favored.
+			if ((dxgiAdapterDesc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0 &&
+				SUCCEEDED(D3D12CreateDevice(dxgiAdapter1.Get(),
+					D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr)) &&
+				dxgiAdapterDesc1.DedicatedVideoMemory > maxDedicatedVideoMemory)
+			{
+				maxDedicatedVideoMemory = dxgiAdapterDesc1.DedicatedVideoMemory;
+				ThrowIfFailed(dxgiAdapter1.As(&dxgiAdapter4));
+			}
+		}
+	}
+
+	return dxgiAdapter4;
+}
+ComPtr<ID3D12Device2> CreateDevice(ComPtr<IDXGIAdapter4> adapter)
+{
+	ComPtr<ID3D12Device2> d3d12Device2;
+	ThrowIfFailed(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3d12Device2)));
+	// Enable debug messages in debug mode.
+#if defined(_DEBUG)
+	ComPtr<ID3D12InfoQueue> pInfoQueue;
+	if (SUCCEEDED(d3d12Device2.As(&pInfoQueue)))
+	{
+		pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+		pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+		pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+		// Suppress whole categories of messages
+	   //D3D12_MESSAGE_CATEGORY Categories[] = {};
+
+	   // Suppress messages based on their severity level
+		D3D12_MESSAGE_SEVERITY Severities[] =
+		{
+			D3D12_MESSAGE_SEVERITY_INFO
+		};
+
+		// Suppress individual messages by their ID
+		D3D12_MESSAGE_ID DenyIds[] = {
+			D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,   // I'm really not sure how to avoid this message.
+			D3D12_MESSAGE_ID_MAP_INVALID_NULLRANGE,                         // This warning occurs when using capture frame while graphics debugging.
+			D3D12_MESSAGE_ID_UNMAP_INVALID_NULLRANGE,                       // This warning occurs when using capture frame while graphics debugging.
+		};
+
+		D3D12_INFO_QUEUE_FILTER NewFilter = {};
+		//NewFilter.DenyList.NumCategories = _countof(Categories);
+		//NewFilter.DenyList.pCategoryList = Categories;
+		NewFilter.DenyList.NumSeverities = _countof(Severities);
+		NewFilter.DenyList.pSeverityList = Severities;
+		NewFilter.DenyList.NumIDs = _countof(DenyIds);
+		NewFilter.DenyList.pIDList = DenyIds;
+
+		ThrowIfFailed(pInfoQueue->PushStorageFilter(&NewFilter));
+	}
+#endif
+
+	return d3d12Device2;
+}
+ComPtr<ID3D12CommandQueue> CreateCommandQueue(ComPtr<ID3D12Device2> device, D3D12_COMMAND_LIST_TYPE type)
+{
+	ComPtr<ID3D12CommandQueue> d3d12CommandQueue;
+
+	D3D12_COMMAND_QUEUE_DESC desc = {};
+	desc.Type = type;
+	desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+	desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+	desc.NodeMask = 0;
+
+	ThrowIfFailed(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&d3d12CommandQueue)));
+
+	return d3d12CommandQueue;
+}
 
 void InitD3D(HWND hWnd)
 {
-	DXGI_SWAP_CHAIN_DESC scd;
 
-	ZeroMemory(&scd, sizeof(DXGI_SWAP_CHAIN_DESC));
-
-	scd.BufferCount = 1;                                    // one back buffer
-	scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;     // use 32-bit color
-	scd.BufferDesc.Width = SCREEN_WIDTH;
-	scd.BufferDesc.Height = SCREEN_HEIGHT;
-	scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;      // how swap chain is to be used
-	scd.OutputWindow = hWnd;                                // the window to be used
-	scd.SampleDesc.Count = 4;                               // how many multisamples
-	scd.Windowed = TRUE;
-	scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-
-	D3D11CreateDeviceAndSwapChain(
-		NULL,
-		D3D_DRIVER_TYPE_HARDWARE,
-		NULL,
-		NULL,
-		NULL,
-		NULL,
-		D3D11_SDK_VERSION,
-		&scd,
-		&swapchain,
-		&dev,
-		NULL,
-		&devcon
-	);
-	//Set the render target
-	ID3D11Texture2D *pBackBuffer;
-	swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);
-
-	dev->CreateRenderTargetView(pBackBuffer, NULL, &backbuffer);
-	pBackBuffer->Release();
-	devcon->OMSetRenderTargets(1, &backbuffer, NULL);
-	//Set the viewport
-	D3D11_VIEWPORT viewport; 
-	ZeroMemory(&viewport, sizeof(D3D11_VIEWPORT));
-
-	viewport.TopLeftX = 0;
-	viewport.TopLeftY = 0;
-	viewport.Width = SCREEN_WIDTH;
-	viewport.Height = SCREEN_HEIGHT;
-
-	devcon->RSSetViewports(1, &viewport);
-
-	InitPipeline();
-	InitGraphics();
 }
 
 void CleanD3D()
 {
-	swapchain->SetFullscreenState(FALSE, NULL);
-	// close and release all existing COM objects
-	swapchain->Release();
-	dev->Release();
-	devcon->Release();
-	backbuffer->Release();
-	pPS->Release();
-	pVS->Release();
-	pLayout->Release();
-	pVBuffer->Release();
+
 }
 
 void RenderFrame(void)
 {
-	//clear back buffer to blue
-	devcon->ClearRenderTargetView(backbuffer, D3DXCOLOR(0.0f, 0.2f, 0.4f, 1.0f));
 
-	//select which vertex buffer to display
-	UINT stride = sizeof(VERTEX);
-	UINT offset = 0;
-	devcon->IASetVertexBuffers(0, 1, &pVBuffer, &stride, &offset);
-
-	//select which primitive to use
-	devcon->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-	//draw the vertex buffer to the back buffer
-	devcon->Draw(3, 0);
-
-
-	swapchain->Present(0,0);
 }
 
 void InitPipeline()
 {
-	// load and compile the two shaders
-	ID3D10Blob *VS, *PS;
-	D3DX11CompileFromFile("shaders.shader", 0, 0, "VShader", "vs_4_0", 0, 0, 0, &VS, 0, 0);
-	D3DX11CompileFromFile("shaders.shader", 0, 0, "PShader", "ps_4_0", 0, 0, 0, &PS, 0, 0);
 
-	// encapsulate both shaders into shader objects
-	dev->CreateVertexShader(VS->GetBufferPointer(), VS->GetBufferSize(), NULL, &pVS);
-	dev->CreatePixelShader(PS->GetBufferPointer(), PS->GetBufferSize(), NULL, &pPS);
-
-	//set the shader objects
-	devcon->VSSetShader(pVS, 0, 0);
-	devcon->PSSetShader(pPS,0,0);
-
-	//create the input layout
-	D3D11_INPUT_ELEMENT_DESC ied[] =
-	{
-		{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
-		{"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0},
-	};
-
-	dev->CreateInputLayout(ied, 2, VS->GetBufferPointer(), VS->GetBufferSize(), &pLayout);
-	devcon->IASetInputLayout(pLayout);
 }
 
 void InitGraphics()
 {
-	// create a triangle using the VERTEX struct
-	VERTEX OurVertices[] =
-	{
-		{0.0f, 0.5f, 0.0f, D3DXCOLOR(1.0f, 0.0f, 0.0f, 1.0f)},
-		{0.45f, -0.5, 0.0f, D3DXCOLOR(0.0f, 1.0f, 0.0f, 1.0f)},
-		{-0.45f, -0.5f, 0.0f, D3DXCOLOR(0.0f, 0.0f, 1.0f, 1.0f)}
-	};
 
-
-	// create the vertex buffer
-	D3D11_BUFFER_DESC bd;
-	ZeroMemory(&bd, sizeof(bd));
-
-	bd.Usage = D3D11_USAGE_DYNAMIC;                // write access access by CPU and GPU
-	bd.ByteWidth = sizeof(VERTEX) * 3;             // size is the VERTEX struct * 3
-	bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;       // use as a vertex buffer
-	bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;    // allow CPU to write in buffer
-
-	dev->CreateBuffer(&bd, NULL, &pVBuffer);       // create the buffer
-
-
-	// copy the vertices into the buffer
-	D3D11_MAPPED_SUBRESOURCE ms;
-	devcon->Map(pVBuffer, NULL, D3D11_MAP_WRITE_DISCARD, NULL, &ms);    // map the buffer
-	memcpy(ms.pData, OurVertices, sizeof(OurVertices));                 // copy the data
-	devcon->Unmap(pVBuffer, NULL);                                      // unmap the buffer
 }
