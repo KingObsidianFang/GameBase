@@ -459,3 +459,15 @@ uint64_t Signal(ComPtr<ID3D12CommandQueue> commandQueue, ComPtr<ID3D12Fence> fen
 
 	return fenceValueForSignal;
 }
+
+void WatiForFenceValue(ComPtr<ID3D12Fence> fence,
+	uint64_t fenceValue, 
+	HANDLE fenceEvent,
+	std::chrono::milliseconds duration = std::chrono::milliseconds::max())
+{
+	if (fence->GetCompletedValue() < fenceValue)
+	{
+		ThrowIfFailed(fence->SetEventOnCompletion(fenceValue, fenceEvent));
+		::WaitForSingleObject(fenceEvent, static_cast<DWORD>(duration.count()));
+	}
+}
