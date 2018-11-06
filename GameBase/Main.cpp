@@ -1,4 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
+
+#pragma comment(lib, "D3D12.lib")
+#pragma comment(lib, "dxgi.lib")
+
 #include <Windows.h>
 #include <shellapi.h> // For CommandLineToArgvW
 
