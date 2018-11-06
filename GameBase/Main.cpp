@@ -1,8 +1,4 @@
 #define WIN32_LEAN_AND_MEAN
-
-#pragma comment(lib, "dxgi.lib")
-#pragma comment(lib,"D3D12.lib")
-
 #include <Windows.h>
 #include <shellapi.h> // For CommandLineToArgvW
 
@@ -92,7 +88,7 @@ void ParseCommandLineArguments()
 	int argc;
 	wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);
 
-	for (int i = 0; i < argc; ++i)
+	for (size_t i = 0; i < argc; ++i)
 	{
 		if (::wcscmp(argv[i], L"-w") == 0 || ::wcscmp(argv[i], L"--width") == 0)
 		{
