@@ -28,7 +28,7 @@ using namespace Microsoft::WRL;
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 
-// D3D12 extension library.
+//DirectX Extension Library
 #include <d3dx12.h>
 
 // STL Headers
