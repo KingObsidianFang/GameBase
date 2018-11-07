@@ -1,4 +1,11 @@
+/*
+	TODO - Separate this class into other classes as per the 2nd tutorial on 3dgep.com
+*/
+
+
+
 #define WIN32_LEAN_AND_MEAN
+
 
 #pragma comment(lib, "D3D12.lib")
 #pragma comment(lib, "dxgi.lib")
